@@ -23,7 +23,7 @@ const φ = -75  # degrees latitude
 #####
 
 arch = GPU()
-device!(CuDevice(3))
+device!(CuDevice(2))
 
 FT = Float64
 
