@@ -1,0 +1,11 @@
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/deps.jl
+
+# Model output
+*.nc
+*.jld2
+*.png
+*.gif
+*.mp4
