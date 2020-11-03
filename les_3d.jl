@@ -1,3 +1,6 @@
+# basic code for the 3D large-eddy simulations of a line plume
+
+# imports - note that the Project.toml file needs to be present for these to work correctly
 using DelimitedFiles, Printf, Interpolations
 using Plots
 using CuArrays, CUDAnative, CUDAdrv
@@ -7,26 +10,25 @@ using Oceananigans.Diagnostics
 using Oceananigans.OutputWriters
 using Oceananigans.AbstractOperations
 using Oceananigans.Utils
-
 using Oceananigans: Face, Cell
 
 #####
-##### Some useful constants
+##### Preliminaries
 #####
 
+# some constants
 const km = 1000
 const Ω_Earth = 7.292115e-5  # [s⁻¹]
 const φ = -75  # degrees latitude
 
-#####
-##### Model grid and domain size
-#####
-
+# architecture
+# modify as appropriate: if no GPU, set arch = CPU() and delete the following line
 arch = GPU()
 device!(CuDevice(2))
 
 FT = Float64
 
+# domain details (grid cells, then dimensions in m)
 Nx = 512 
 Ny = 512
 Nz = 96 
@@ -40,7 +42,8 @@ end_time = 6hour
 g = 9.81
 β = 7.8*10^(-4)
 
-# Make up salinity and temperature profiles based on prescribed N
+# SET UP INITIAL CONDITION
+# Option 1: Make up salinity and temperature profiles based on prescribed N
 #
 #Nb = 0.003
 #ΔS = (Lz*Nb^2)/(g*β)
@@ -48,7 +51,7 @@ g = 9.81
 #T₀ = 1*ones(Nz)
 #S₀ = reverse(collect(34.6-ΔS:ΔS/(Nz-1):34.6))
 
-# Read T and S data from file
+# Option 2: Read T and S data from file
 zC = collect(((-Lz:Lz/Nz:0).+Lz/(2*Nz))[1:end-1])
 zdata = (collect(1:1:5400))
 T = (readdlm("pig_data/pig_outflow_2014_T.txt")[:])
@@ -73,6 +76,8 @@ Si = LinearInterpolation(z_S, S_good, extrapolation_bc=Interpolations.Flat())
 T₀ = Ti.(-zC)
 S₀ = Si.(-zC)
 
+# end initial condition setup
+
 # convert to CuArray if we are running on a GPU
 if arch == GPU()
     T₀ = CuArray(T₀)
@@ -80,22 +85,12 @@ if arch == GPU()
 end
 
 # Meltwater source location - implemented as a box
-#width = 50
-#source_corners_m = ((2500-width/2,2500-width/2,0),(2500+width/2,2500+width/2,1))
-#source_corners_m = ((2500-width/2,0,0),(2500+width/2,width,1))
-
-#N = (Nx,Ny,Nz)
-#L = (Lx,Ly,Lz)
-#source_corners = (Int.(floor.(source_corners_m[1].*N./L)),Int.(ceil.(source_corners_m[2].*N./L)))
-
 # width in terms of grid cells 
-widthx = 75 
+widthx = 100 
 widthy = 10
 source_corners = ((256-widthx/2,0,0),(256+widthx/2,widthy,1))
 
-λ = 1/(60)  # Relaxation timescale [s⁻¹].
-
-# specify the integrated buoyancy source (m^4/s^3)
+# specify the integrated buoyancy source (m^4/s^3) (i.e. F)
 # then calculate salinity fluxes into bottom boxes
 B_flux = 1 
 A = (Ly/Ny)*(source_corners[2][2] - source_corners[1][2])*(Lx/Nx)*(source_corners[2][1] - source_corners[1][1])
@@ -104,27 +99,19 @@ S_flux = -B_flux/(A*g*β*(Lz/Nz))
 # meltwater passive tracer flux
 m_flux = 1
 
-# Specify width of stable relaxation area (kept in for simplicity, we don't actually use this)
-stable_relaxation_width_m = 400.0 
-stable_relaxation_width = Int(ceil(stable_relaxation_width_m.*Ny./Ly))
-
 # Forcing functions 
-@inline T_relax(i, j, k, grid, time, U, C, p) =
-    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], 0, 0) +
-              ifelse(j>grid.Ny-p.stable_relaxation_width, 0, 0)
-
-@inline S_relax(i, j, k, grid, time, U, C, p) =
-    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], p.S_flux, 0) + 
-              ifelse(j>grid.Ny-p.stable_relaxation_width, 0, 0)
+@inline T_forcing(i, j, k, grid, time, U, C, p) =
+    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], 0, 0) 
+              
+@inline S_forcing(i, j, k, grid, time, U, C, p) =
+    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], p.S_flux, 0) 
 
 @inline m_relax(i, j, k, grid, time, U, C, p) =
-    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], p.m_flux, 0) + 
-              ifelse(j>grid.Ny-p.stable_relaxation_width, 0, 0)
+    @inbounds ifelse(p.source_corners[1][1]<=i<=p.source_corners[2][1] && p.source_corners[1][2]<=j<=p.source_corners[2][2] && p.source_corners[1][3]<=k<=p.source_corners[2][3], p.m_flux, 0) 
 
+params = (source_corners=source_corners, S_flux=S_flux, m_flux = m_flux, T₀=T₀,S₀=S₀)
 
-params = (source_corners=source_corners, S_flux=S_flux, m_flux = m_flux, λ=λ, stable_relaxation_width=stable_relaxation_width, T₀=T₀,S₀=S₀)
-
-forcing = ModelForcing(T = T_relax, S = S_relax, meltwater = m_relax)
+forcing = ModelForcing(T = T_forcing, S = S_forcing, meltwater = m_relax)
 
 #####
 ##### Set up model and simulation
@@ -133,6 +120,8 @@ forcing = ModelForcing(T = T_relax, S = S_relax, meltwater = m_relax)
 topology = (Oceananigans.Periodic, Bounded, Bounded)
 grid = RegularCartesianGrid(topology=topology, size=(Nx, Ny, Nz), x=(-Lx/2, Lx/2), y=(0, Ly), z=(-Lz, 0))
 
+# equation of state - pick one!
+# eos = LinearEquationOfState()
 eos = RoquetIdealizedNonlinearEquationOfState(:freezing)
 
 model = IncompressibleModel(
@@ -157,9 +146,6 @@ S₀_3D = repeat(reshape(S₀, 1, 1, Nz), Nx, Ny, 1)
 set!(model.tracers.T, T₀_3D)
 set!(model.tracers.S, S₀_3D)
 
-## Set meltwater concentration to 1 at the source.
-#model.tracers.meltwater.data[source_corners[1][1]:source_corners[2][1],source_corners[1][2]:source_corners[2][2],source_corners[1][3]:source_corners[2][3]] .= 1  
-#
 #####
 ##### Write out 3D fields and slices to NetCDF files.
 #####
@@ -202,7 +188,7 @@ output_attributes = Dict(
 
 eos_name(::LinearEquationOfState) = "LinearEOS"
 eos_name(::RoquetIdealizedNonlinearEquationOfState) = "RoquetEOS"
-prefix = "$(Nx)x$(Ny)x$(Nz)_br$(B_flux)_w$(widthx)x$(widthy)c_2014_"
+prefix = "$(Nx)x$(Ny)x$(Nz)_F$(B_flux)_w$(widthx)x$(widthy)c"
 
 #####
 ##### Print banner
@@ -217,7 +203,7 @@ prefix = "$(Nx)x$(Ny)x$(Nz)_br$(B_flux)_w$(widthx)x$(widthy)c_2014_"
         φ : %.3g [latitude]
         f : %.3e [s⁻¹]
      days : %d
-        B : %.2f [m⁴s⁻³]
+        F : %.2f [m⁴s⁻³]
   closure : %s
       EoS : %s
 
@@ -246,10 +232,6 @@ dcfl = DiffusiveCFL(wizard)
 function progress_statement(simulation)
     model = simulation.model
     C_mw = model.tracers.meltwater  # Convenient alias
-    
-    # add passive meltwater tracer at source, remove at boundary
-    #C_mw.data[source_corners[1][1]:source_corners[2][1],source_corners[1][2]:source_corners[2][2],source_corners[1][3]:source_corners[2][3]] .= 1
-    #C_mw.data[:,Ny-stable_relaxation_width:Ny,:] .= 0
     
     # Calculate simulation progress in %.
     progress = 100 * (model.clock.time / end_time)
@@ -299,5 +281,5 @@ simulation.output_writers[:along_front_slice] =
 run!(simulation)
 
 for ow in simulation.output_writers
-    ow isa NetCDFOutputWriter && close(ow)
+     ow isa NetCDFOutputWriter && close(ow)
 end
