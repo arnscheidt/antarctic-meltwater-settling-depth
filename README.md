@@ -1,5 +1,5 @@
 # antarctic-meltwater-settling-depth
-Code to set up the simulations in Arnscheidt et al. "On the settling depth of meltwater escaping from underneath an Antarctic ice shelf". Each model runs from a single script, and the relevant parameter values can be straightforwardly modified within that script.
+Code to set up the simulations in Arnscheidt et al. (2021) "On the settling depth of meltwater escaping from underneath an Antarctic ice shelf". Each model runs from a single script, and the relevant parameter values can be straightforwardly modified within that script.
 
 The simple line plume model can be run from `1d_line_plume.py` with a working [Python3](https://www.python.org/downloads/) environment.
 
